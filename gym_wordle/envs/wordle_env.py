@@ -1,14 +1,14 @@
 import gym
 from gym import spaces
 import numpy as np
-import pkg_resources
 import random
+import pkg_resources
 from typing import Optional
 import colorama
 from colorama import Fore
 from colorama import Style
+import logging
 
-from gym_wordle.exceptions import InvalidWordException
 
 colorama.init(autoreset=True)
 
@@ -16,28 +16,49 @@ colorama.init(autoreset=True)
 GAME_LENGTH = 6
 WORD_LENGTH = 5
 
+ALPHABET_STATUS_TO_INT_LOOKUP = {}
+INT_TO_ALPHABET_STATUS_LOOKUP = {}
+
+for i in range(4):
+    for j in range(27):
+        ALPHABET_STATUS_TO_INT_LOOKUP[(i, j)] = 27 * i + j
+        INT_TO_ALPHABET_STATUS_LOOKUP[27 * i + j] = {'status': i, 'alphabet': j}
+
+
 # load words and then encode
 filename = pkg_resources.resource_filename(
     'gym_wordle',
     'data/5_words.txt'
 )
 
+def custom_distance(source, target):
+    distance = 0
+    for index, char in enumerate(source):
+        if char in target:
+            if char!=target[index]:
+                distance += 1
+        else:
+            distance += 2
+    return distance
+
 def encodeToStr(encoding):
     string = ""
     for enc in encoding:
-        string += chr(ord('a') + enc)
+        string += chr(97 + enc)
     return string
 
 def strToEncode(lines):
     encoding = []
     for line in lines:
-        assert len(line.strip()) == 5  # Must contain 5-letter words for now
         encoding.append(tuple(ord(char) - 97 for char in line.strip()))
     return encoding
 
 
 with open(filename, "r") as f:
     WORDS = strToEncode(f.readlines())
+    WORDS = [WORDS[x] for x in [1000, 2000, 3000, 4000, 5000, 6000]]
+    # random.shuffle(WORDS)
+    # WORDS = WORDS[:1]
 
 
 class WordleEnv(gym.Env):
@@ -82,65 +103,107 @@ class WordleEnv(gym.Env):
     def __init__(self):
         super(WordleEnv, self).__init__()
         self.action_space = spaces.MultiDiscrete([26] * WORD_LENGTH)
-        self.observation_space = spaces.Dict({
-            'board': spaces.Box(low=-1, high=2, shape=(GAME_LENGTH, WORD_LENGTH), dtype=int),
-            'alphabet': spaces.Box(low=-1, high=2, shape=(26,), dtype=int)
-        })
+        self.observation_space = spaces.Box(low=-1, high=2, shape=(5, 26,))
+
+    def reset(self, seed: Optional[int] = None):
+        # super().reset(seed=seed)
+        if seed:
+            self.hidden_word = random.choice([WORDS[x] for x in seed])
+        else:
+            self.hidden_word = random.choice(WORDS)
+        # self.guesses_left = GAME_LENGTH
+        self.board_row_idx = 0
+        self.state = np.negative(np.ones(shape=(WORD_LENGTH, 26), dtype=int))
+        self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=int))
         self.guesses = []
+        self.scores = [self.state.sum()]
+        return self._get_obs()
 
     def step(self, action):
-        assert self.action_space.contains(action)
+        # action = WORDS[action]
+        # assert self.action_space.contains(action)
 
         # Action must be a valid word
-        if not tuple(action) in WORDS:
-            raise InvalidWordException(encodeToStr(action) + " is not a valid word.")
-
-        # update game board and alphabet tracking
-        board_row_idx = GAME_LENGTH - self.guesses_left
+        # if not tuple(action) in WORDS:
+        #     return self._get_obs(), -11, True, {}
+        # update game board
+        hw = list(self.hidden_word)
+        solved_indexes = []
         for idx, char in enumerate(action):
-
-            if self.hidden_word[idx] == char:
-                encoding = 2
-            elif char in self.hidden_word:
-                encoding = 1
+            if char not in hw:
+                logging.debug('Alphabet "' + chr(97 + char) + '" does not exist in the remaning word at any non solved index. Rejecting it across the word.')
+                for i in range(WORD_LENGTH):
+                    if i not in solved_indexes:
+                        self.state[i, char] = 0
+                self.board[self.board_row_idx, idx] = 0
             else:
-                encoding = 0
-
-            self.board[board_row_idx, idx] = encoding
-            self.alphabet[char] = encoding
-
+                if char != self.hidden_word[idx]:
+                    self.board[self.board_row_idx, idx] = 1
+                    hw.remove(char)
+                    self.state[idx, char] = 0
+                    self.state[:, char] = np.where(self.state[:, char]==-1, 1, self.state[:, char])
+                else:
+                    # guessed ith alphabet correctly
+                    self.board[self.board_row_idx, idx] = 2
+                    self.state[:, char] = np.where(self.state[:, char]==1, -1, self.state[:, char]) # maybes for the same alphabet become unknowns
+                    self.state[idx, :] = 0 # all other alphabets become incorrect on this word index
+                    self.state[idx, char] = 2 
+                    hw.remove(char)
+                    solved_indexes.append(idx)
+        deductions_pending = True
+        while(deductions_pending):
+            deductions_pending = False
+            for i in range(26):
+                if (self.state[:, i]==0).sum()==4 and (self.state[:, i]==1).sum()==1:
+                    for j in range(WORD_LENGTH):
+                        if self.state[j, i]==1:
+                            logging.debug('Deducing alphabet "' + chr(97 + i) + '" at position ' + str(j + 1) + ' by elimination and marking all other alphabets at this location as incorrect.')
+                            self.state[j, :] = 0
+                            self.state[j, i] = 2
+                            deductions_pending = True
+                            break # can only happen once with an alphabet so no need to continue the for loop
+        
+        possible_alphabets = []
+        known_alphabets = []
+        for i in range(26):
+            if (self.state[:, i]==1).any():            
+                possible_alphabets.append(i)
+            for j in range(5):
+                if self.state[j, i]==2:            
+                    known_alphabets.append(i)
+        if len(possible_alphabets) == 5 - len(known_alphabets):
+            for i in range(26):
+                if i not in possible_alphabets and i not in known_alphabets:
+                    logging.debug('Eliminating alphabet "' + chr(97 + i) + '" from consideration as all correct alphabets are either known or possible.')
+                    self.state[:, i] = 0
+        # reward = self.score - self.previous_score
+        # reward -= 1/6
+        
         # update guesses remaining tracker
-        self.guesses_left -= 1
+        self.board_row_idx += 1
 
         # update previous guesses made
         self.guesses.append(action)
 
         # check to see if game is over
-        if all(self.board[board_row_idx, :] == 2):
-            reward = 1.0
+        if all(self.board[self.board_row_idx - 1, :] == 2):
             done = True
         else:
-            if self.guesses_left > 0:
-                reward = 0.0
-                done = False
-            else:
-                reward = -1.0
+            if self.board_row_idx == GAME_LENGTH:
                 done = True
-
+            else:
+                done = False
+        # if done:
+            # reward += self.board[self.board_row_idx, :].sum()
+        self.scores.append(self.state.sum())
+        reward = -custom_distance(encodeToStr(action), encodeToStr(self.hidden_word))
+        # reward = self.scores[-1] - self.scores[-2]
+        # reward -= 40/6
         return self._get_obs(), reward, done, {}
 
     def _get_obs(self):
-        return {'board': self.board, 'alphabet': self.alphabet}
-
-    def reset(self, seed: Optional[int] = None):
-        # super().reset(seed=seed)
-        self.hidden_word = random.choice(WORDS)
-        self.guesses_left = GAME_LENGTH
-        self.board = np.negative(
-            np.ones(shape=(GAME_LENGTH, WORD_LENGTH), dtype=int))
-        self.alphabet = np.negative(np.ones(shape=(26,), dtype=int))
-        self.guesses = []
-        return self._get_obs()
+        return self.state
+    
 
     def render(self, mode="human"):
         assert mode in ["human"], "Invalid mode, must be \"human\""
@@ -155,18 +218,6 @@ class WordleEnv(gym.Env):
                 elif self.board[i][j] == 2:
                     print(Fore.GREEN + Style.BRIGHT + letter + " ", end='')
             print()
-        print()
-
-        for i in range(len(self.alphabet)):
-            letter = chr(ord('a') + i)
-            if self.alphabet[i] == 0:
-                print(Fore.BLACK + Style.BRIGHT + letter + " ", end='')
-            elif self.alphabet[i] == 1:
-                print(Fore.YELLOW + Style.BRIGHT + letter + " ", end='')
-            elif self.alphabet[i] == 2:
-                print(Fore.GREEN + Style.BRIGHT + letter + " ", end='')
-            elif self.alphabet[i] == -1:
-                print(letter + " ", end='')
         print()
         print('###################################################')
         print()

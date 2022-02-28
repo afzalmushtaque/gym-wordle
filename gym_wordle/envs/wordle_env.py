@@ -1,3 +1,4 @@
+from dis import dis
 from math import dist
 import gym
 from gym import spaces
@@ -35,6 +36,7 @@ def strToEncode(lines):
     for line in lines:
         encoding.append(tuple(ord(char) - 97 for char in line.strip()))
     return encoding
+
 
 
 with open(filename, "r") as f:
@@ -86,7 +88,9 @@ class WordleEnv(gym.Env):
         self.action_space = spaces.MultiDiscrete([26] * WORD_LENGTH)
         # self.observation_space = spaces.Box(low=-1, high=2, shape=(WORD_LENGTH, 26,))
         self.observation_space = spaces.MultiDiscrete(nvec=[4] * WORD_LENGTH * 26)
-        self.syllabus = list(np.arange(100))
+        # self.observation_space = spaces.MultiBinary(n=[4] * WORD_LENGTH * 26)
+        # self.syllabus = list(np.arange(100))
+        self.syllabus = list(np.arange(VOCAB_SIZE))
         self.cheat_mode = kwargs.get('cheat_mode', True)
         
 
@@ -106,14 +110,12 @@ class WordleEnv(gym.Env):
             self.hidden_word = random.choice([WORDS[x] for x in self.syllabus])
         # self.guesses_left = GAME_LENGTH
         self.board_row_idx = 0
-        self.prev_state = np.negative(np.ones(shape=(WORD_LENGTH, 26), dtype=int))
-        self.state = np.negative(np.ones(shape=(WORD_LENGTH, 26), dtype=int))
-        
-            
+        self.prev_state = np.zeros(shape=(WORD_LENGTH, 26), dtype=int)
+        self.state = np.zeros(shape=(WORD_LENGTH, 26), dtype=int)
         self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=int))
         self.guesses = []
         if self.cheat_mode:
-            self.state, _, _, _ = self.evaluate_action(self.hidden_word, cheat_mode=True)
+            _, _, _, _ = self.evaluate_action(self.hidden_word, cheat_mode=True)
         # self.scores = [self.state.sum()]
         return self._get_obs()
 
@@ -129,9 +131,9 @@ class WordleEnv(gym.Env):
                 # in the correct location
                 if not cheat_mode:
                     self.board[self.board_row_idx, idx] = 2
-                self.state[:, char] = np.where(self.state[:, char]==1, -1, self.state[:, char]) # maybes for the same alphabet become unknowns
-                self.state[idx, :] = 0 # all other alphabets become incorrect on this word index
-                self.state[idx, char] = 2 
+                self.state[:, char] = np.where(self.state[:, char]==2, 0, self.state[:, char]) # maybes for the same alphabet become unknowns
+                self.state[idx, :] = 1 # all other alphabets become incorrect on this word index
+                self.state[idx, char] = 3 
                 hw.remove(char)
                 solved_indexes.append(idx)
                 if self.state[idx, char]!=self.prev_state[idx, char]:
@@ -143,7 +145,7 @@ class WordleEnv(gym.Env):
             if char not in hw:
                 logging.debug('Alphabet "' + chr(97 + char) + '" does not exist in the remaining word at any non solved index. Rejecting it across the word.')
                 for i in range(WORD_LENGTH):
-                    self.state[:, char] = np.where(self.state[:, char]==-1, 0, self.state[:, char])
+                    self.state[:, char] = np.where(self.state[:, char]==0, 1, self.state[:, char])
                     # if i not in solved_indexes:
                     #     self.state[i, char] = 0
                 distance += 0.2
@@ -157,8 +159,8 @@ class WordleEnv(gym.Env):
                     if not cheat_mode:
                         self.board[self.board_row_idx, idx] = 1
                     hw.remove(char)
-                    self.state[idx, char] = 0
-                    self.state[:, char] = np.where(self.state[:, char]==-1, 1, self.state[:, char])
+                    self.state[idx, char] = 1
+                    self.state[:, char] = np.where(self.state[:, char]==0, 2, self.state[:, char])
                     distance += 0.1
             # check for changes
             if self.state[idx, char]==self.prev_state[idx, char]:
@@ -169,12 +171,12 @@ class WordleEnv(gym.Env):
         while(deductions_pending):
             deductions_pending = False
             for i in range(26):
-                if (self.state[:, i]==0).sum()==4 and (self.state[:, i]==1).sum()==1:
+                if (self.state[:, i]==1).sum()==4 and (self.state[:, i]==2).sum()==1:
                     for j in range(WORD_LENGTH):
-                        if self.state[j, i]==1:
+                        if self.state[j, i]==2:
                             logging.debug('Deducing alphabet "' + chr(97 + i) + '" at position ' + str(j + 1) + ' by elimination and marking all other alphabets at this location as incorrect.')
-                            self.state[j, :] = 0
-                            self.state[j, i] = 2
+                            self.state[j, :] = 1
+                            self.state[j, i] = 3
                             deductions_pending = True
                             break # can only happen once with an alphabet so no need to continue the for loop
         
@@ -212,6 +214,8 @@ class WordleEnv(gym.Env):
                 done = False
         
         self.prev_state = self.state.copy()
+        # reward = -custom_distance(action, self.hidden_word) / 10
+        reward = -(10 - self.board[self.board_row_idx-1].sum()) / 60
         return self._get_obs(), reward, done, {}
     
     def step(self, action):
@@ -225,7 +229,12 @@ class WordleEnv(gym.Env):
         
 
     def _get_obs(self):
-        return self.state
+        # agent_state = np.empty(shape=(5, 26, 4), dtype=np.bool)
+        # for i in range(WORD_LENGTH):
+        #     for j in range(26):
+        #         agent_state[i, j] = np.eye(4)[self.state[i, j]]
+        # return agent_state.reshape(-1, 4)
+        return self.state.flatten()
     
     def render(self, mode="human"):
         assert mode in ["human"], "Invalid mode, must be \"human\""

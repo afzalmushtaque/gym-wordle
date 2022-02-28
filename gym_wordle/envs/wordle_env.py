@@ -9,7 +9,6 @@ from typing import Optional
 import colorama
 from colorama import Fore
 from colorama import Style
-from visualizer import visualize
 import logging
 
 
@@ -24,6 +23,33 @@ filename = pkg_resources.resource_filename(
     'gym_wordle',
     'data/5_words.txt'
 )
+
+def visualize(observation):
+    formed_observation = np.reshape(observation, newshape=(5, 26))
+    # formed_observation = np.argmax(formed_observation, axis=-1)
+    # formed_observation = observation
+    header = 'Step: n | '
+    for i in range(26):
+        header += chr(97+i) + ' | '
+    print('-' * len(header))
+    print(header)
+    print('-' * len(header))
+    for i in range(5):
+        print_string = 'Step: ' + str(i) + ' |'
+        for j in range(26):
+            if formed_observation[i][j] == 0:
+                encoding = '  '
+            elif formed_observation[i][j] == 1:
+                encoding = ' -'
+            elif formed_observation[i][j] == 2:
+                encoding = ' ?'
+            elif formed_observation[i][j] == 3:
+                encoding = ' R'
+            else:
+                raise Exception('Invalid state')
+            print_string += encoding + ' |'
+        print(print_string)
+    print('-' * len(header))
 
 def encodeToStr(encoding):
     string = ""

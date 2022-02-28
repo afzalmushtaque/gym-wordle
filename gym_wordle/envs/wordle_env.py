@@ -81,11 +81,12 @@ class WordleEnv(gym.Env):
             or in the correct position.
     """
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         super(WordleEnv, self).__init__()
         self.action_space = spaces.MultiDiscrete([26] * WORD_LENGTH)
         self.observation_space = spaces.Box(low=-1, high=2, shape=(WORD_LENGTH, 26,))
         self.syllabus = list(np.arange(100))
+        self.cheat_mode = kwargs.get('cheat_mode', True)
         
 
     def expand_syllabus(self):
@@ -111,7 +112,9 @@ class WordleEnv(gym.Env):
         # self.scores = [self.state.sum()]
         return self._get_obs()
 
-    def step(self, action):
+    def evaluate_action(self, action, cheat_mode):
+        if cheat_mode:
+            action = self.hidden_word
         hw = list(self.hidden_word)
         solved_indexes = []
         distance = 0
@@ -119,7 +122,8 @@ class WordleEnv(gym.Env):
             self.prev_state = self.state.copy()
             if char == self.hidden_word[idx]:
                 # in the correct location
-                self.board[self.board_row_idx, idx] = 2
+                if not cheat_mode:
+                    self.board[self.board_row_idx, idx] = 2
                 self.state[:, char] = np.where(self.state[:, char]==1, -1, self.state[:, char]) # maybes for the same alphabet become unknowns
                 self.state[idx, :] = 0 # all other alphabets become incorrect on this word index
                 self.state[idx, char] = 2 
@@ -138,14 +142,15 @@ class WordleEnv(gym.Env):
                     # if i not in solved_indexes:
                     #     self.state[i, char] = 0
                 distance += 0.2
-                if not idx in solved_indexes:
+                if not idx in solved_indexes and not cheat_mode:
                     self.board[self.board_row_idx, idx] = 0
                 
             else:
                 # alphabet is present in the word
                 if char != self.hidden_word[idx]:
                     # in the wrong location
-                    self.board[self.board_row_idx, idx] = 1
+                    if not cheat_mode:
+                        self.board[self.board_row_idx, idx] = 1
                     hw.remove(char)
                     self.state[idx, char] = 0
                     self.state[:, char] = np.where(self.state[:, char]==-1, 1, self.state[:, char])
@@ -183,10 +188,10 @@ class WordleEnv(gym.Env):
         #             self.state[:, i] = 0
         
         # update guesses remaining tracker
-        self.board_row_idx += 1
-
-        # update previous guesses made
-        self.guesses.append(action)
+        if not cheat_mode:
+            self.board_row_idx += 1
+            # update previous guesses made
+            self.guesses.append(action)
         
         assert -50 <= np.round(distance, 6) <= 1.5
         # scaled_distance = (distance + 50) / (1.5 + 50)
@@ -203,6 +208,16 @@ class WordleEnv(gym.Env):
         
         self.prev_state = self.state.copy()
         return self._get_obs(), reward, done, {}
+    
+    def step(self, action):
+        obs, reward, done, info = self.evaluate_action(action, cheat_mode=False)
+        if self.cheat_mode:
+            # undo state changes
+            state_backup = self.state.copy()
+            obs, _, _, _ = self.evaluate_action(action, cheat_mode=True)
+            self.state = state_backup.copy()
+        return obs, reward, done, info
+        
 
     def _get_obs(self):
         return self.state
@@ -227,7 +242,7 @@ class WordleEnv(gym.Env):
 if __name__ == "__main__":
     import sys
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    env = WordleEnv()
+    env = WordleEnv(cheat_mode=True)
     obs = env.reset(seed=[10])
     step = 0
     print('Hidden word:')

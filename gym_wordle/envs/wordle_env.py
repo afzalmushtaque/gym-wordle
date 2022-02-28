@@ -84,7 +84,8 @@ class WordleEnv(gym.Env):
     def __init__(self, **kwargs):
         super(WordleEnv, self).__init__()
         self.action_space = spaces.MultiDiscrete([26] * WORD_LENGTH)
-        self.observation_space = spaces.Box(low=-1, high=2, shape=(WORD_LENGTH, 26,))
+        # self.observation_space = spaces.Box(low=-1, high=2, shape=(WORD_LENGTH, 26,))
+        self.observation_space = spaces.MultiDiscrete(nvec=[4] * WORD_LENGTH * 26)
         self.syllabus = list(np.arange(100))
         self.cheat_mode = kwargs.get('cheat_mode', True)
         
@@ -105,10 +106,14 @@ class WordleEnv(gym.Env):
             self.hidden_word = random.choice([WORDS[x] for x in self.syllabus])
         # self.guesses_left = GAME_LENGTH
         self.board_row_idx = 0
-        self.state = np.negative(np.ones(shape=(WORD_LENGTH, 26), dtype=int))
         self.prev_state = np.negative(np.ones(shape=(WORD_LENGTH, 26), dtype=int))
+        self.state = np.negative(np.ones(shape=(WORD_LENGTH, 26), dtype=int))
+        
+            
         self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=int))
         self.guesses = []
+        if self.cheat_mode:
+            self.state, _, _, _ = self.evaluate_action(self.hidden_word, cheat_mode=True)
         # self.scores = [self.state.sum()]
         return self._get_obs()
 
@@ -244,6 +249,7 @@ if __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     env = WordleEnv(cheat_mode=True)
     obs = env.reset(seed=[10])
+    visualize(obs)
     step = 0
     print('Hidden word:')
     print(encodeToStr(env.hidden_word))

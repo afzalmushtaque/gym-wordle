@@ -16,21 +16,23 @@ def softmax(z):
 def visualize(observation):
     # formed_observation = np.reshape(observation, newshape=(6, 5, 27, 3))
     formed_observation = observation
-    # header = '  '
-    # for i in range(6):
-    #     header += '***** Step ' + str(i) + ' ******||'
-    # print(header)
-    # print('-' * len(header))
+    header = 'Step: n | '
     for i in range(26):
-        print_string = lookup[i] + ':'
-        for j in range(5):
-            if formed_observation[j][i] == 0:
+        header += chr(97+i) + ' | '
+    print('-' * len(header))
+    print(header)
+    print('-' * len(header))
+    for i in range(5):
+        print_string = 'Step: ' + str(i) + ' |'
+        for j in range(26):
+            if formed_observation[i][j] == 0:
                 encoding = ' -'
-            elif formed_observation[j][i] == 1:
+            elif formed_observation[i][j] == 1:
                 encoding = ' ?'
-            elif formed_observation[j][i] == 2:
+            elif formed_observation[i][j] == 2:
                 encoding = ' R'
             else:
                 encoding = '  '
             print_string += encoding + ' |'
         print(print_string)
+    print('-' * len(header))

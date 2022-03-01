@@ -25,17 +25,17 @@ filename = pkg_resources.resource_filename(
 )
 
 def visualize(observation):
-    formed_observation = np.reshape(observation, newshape=(5, 26))
+    formed_observation = np.reshape(observation[:-1], newshape=(5, 26))
     # formed_observation = np.argmax(formed_observation, axis=-1)
     # formed_observation = observation
-    header = 'Step: n | '
+    header = 'Step: ' + str(observation[-1] + 1) + ' | '
     for i in range(26):
         header += chr(97+i) + ' | '
     print('-' * len(header))
     print(header)
     print('-' * len(header))
     for i in range(5):
-        print_string = 'Step: ' + str(i) + ' |'
+        print_string = 'Word: ' + str(i + 1) + ' |'
         for j in range(26):
             if formed_observation[i][j] == 0:
                 encoding = '  '
@@ -113,7 +113,9 @@ class WordleEnv(gym.Env):
         super(WordleEnv, self).__init__()
         self.action_space = spaces.MultiDiscrete([26] * WORD_LENGTH)
         # self.observation_space = spaces.Box(low=-1, high=2, shape=(WORD_LENGTH, 26,))
-        self.observation_space = spaces.MultiDiscrete(nvec=[4] * WORD_LENGTH * 26)
+        observation_space_vector = [4] * WORD_LENGTH * 26
+        observation_space_vector.append(GAME_LENGTH)
+        self.observation_space = spaces.MultiDiscrete(nvec=observation_space_vector)
         # self.observation_space = spaces.MultiBinary(n=[4] * WORD_LENGTH * 26)
         # self.syllabus = list(np.arange(100))
         self.syllabus = list(np.arange(VOCAB_SIZE))
@@ -260,7 +262,8 @@ class WordleEnv(gym.Env):
         #     for j in range(26):
         #         agent_state[i, j] = np.eye(4)[self.state[i, j]]
         # return agent_state.reshape(-1, 4)
-        return self.state.flatten()
+        self.board_row_idx
+        return np.hstack((self.state.flatten(), self.board_row_idx)) 
     
     def render(self, mode="human"):
         assert mode in ["human"], "Invalid mode, must be \"human\""

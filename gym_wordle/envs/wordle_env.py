@@ -114,7 +114,7 @@ class WordleEnv(gym.Env):
         self.action_space = spaces.MultiDiscrete([26] * WORD_LENGTH)
         # self.observation_space = spaces.Box(low=-1, high=2, shape=(WORD_LENGTH, 26,))
         observation_space_vector = [4] * WORD_LENGTH * 26
-        observation_space_vector.append(GAME_LENGTH)
+        observation_space_vector.append(GAME_LENGTH + 1)
         self.observation_space = spaces.MultiDiscrete(nvec=observation_space_vector)
         # self.observation_space = spaces.MultiBinary(n=[4] * WORD_LENGTH * 26)
         # self.syllabus = list(np.arange(100))
@@ -228,11 +228,6 @@ class WordleEnv(gym.Env):
             # update previous guesses made
             self.guesses.append(action)
         
-        # assert -50 <= np.round(distance, 6) <= 1.5
-        # scaled_distance = (distance + 50) / (1.5 + 50)
-        # reward = -((scaled_distance * 2) - 1)
-        # check to see if game is over
-        # reward = -distance / 50
         if all(self.board[self.board_row_idx - 1, :] == 2):
             done = True
         else:
@@ -257,12 +252,6 @@ class WordleEnv(gym.Env):
         
 
     def _get_obs(self):
-        # agent_state = np.empty(shape=(5, 26, 4), dtype=np.bool)
-        # for i in range(WORD_LENGTH):
-        #     for j in range(26):
-        #         agent_state[i, j] = np.eye(4)[self.state[i, j]]
-        # return agent_state.reshape(-1, 4)
-        self.board_row_idx
         return np.hstack((self.state.flatten(), self.board_row_idx)) 
     
     def render(self, mode="human"):
@@ -296,10 +285,6 @@ if __name__ == "__main__":
     while not done:
         guess = input('Enter your guess: ')
         act = np.array(strToEncode([guess])[0])
-        # act = int(guess)
-        # make a random guesgoofss
-        # act = env.action_space.sample()
-        # take a step
         obs, reward, done, _ = env.step(act)
         visualize(obs)
         step += 1

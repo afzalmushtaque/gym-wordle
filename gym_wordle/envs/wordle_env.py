@@ -226,11 +226,11 @@ class WordleEnv(gym.Env):
             # update previous guesses made
             self.guesses.append(action)
         
-        assert -50 <= np.round(distance, 6) <= 1.5
+        # assert -50 <= np.round(distance, 6) <= 1.5
         # scaled_distance = (distance + 50) / (1.5 + 50)
         # reward = -((scaled_distance * 2) - 1)
         # check to see if game is over
-        reward = -distance / 50
+        # reward = -distance / 50
         if all(self.board[self.board_row_idx - 1, :] == 2):
             done = True
         else:

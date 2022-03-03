@@ -230,7 +230,9 @@ class WordleEnv(gym.Env):
         
         if all(self.board[self.board_row_idx - 1, :] == 2):
             done = True
+            reward = 1
         else:
+            reward = 0
             if self.board_row_idx == GAME_LENGTH:
                 done = True
             else:
@@ -238,7 +240,10 @@ class WordleEnv(gym.Env):
         
         self.prev_state = self.state.copy()
         # reward = -custom_distance(action, self.hidden_word) / 10
-        reward = -(10 - self.board[self.board_row_idx-1].sum()) / 60
+        scaled_rewards = np.round(np.power(np.exp(self.board[self.board_row_idx-1]), 2.308), 0) - 1 # [0, 9, 100]
+        reward -= ((WORD_LENGTH * 100) - scaled_rewards.sum()) / (WORD_LENGTH * 100 * GAME_LENGTH)
+        # reward = (500 - scaled_rewards.sum() / (WORD_LENGTH * 10 * GAME_LENGTH))
+        # reward -= (1/6)
         return self._get_obs(), reward, done, {}
     
     def step(self, action):
@@ -290,7 +295,7 @@ if __name__ == "__main__":
         step += 1
         total_reward += reward
         print('Guesses left: {:,.0f}'.format(GAME_LENGTH - env.board_row_idx))
-        print('Reward: {0:,.2f}, Total Reward: {1:,.2f}'.format(reward, total_reward))
+        print('Reward: {0:,.3f}, Total Reward: {1:,.3f}'.format(reward, total_reward))
         print('Attempted ' + encodeToStr(act))
         env.render()
     print('Hidden word:')

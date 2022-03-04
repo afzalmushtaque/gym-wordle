@@ -10,6 +10,7 @@ import colorama
 from colorama import Fore
 from colorama import Style
 import logging
+from ray.rllib import VectorEnv
 
 
 colorama.init(autoreset=True)
@@ -17,12 +18,8 @@ colorama.init(autoreset=True)
 # global game variables
 GAME_LENGTH = 6
 WORD_LENGTH = 5
-
-# load words and then encode
-filename = pkg_resources.resource_filename(
-    'gym_wordle',
-    'data/5_words.txt'
-)
+GUESS_LIST = np.load(pkg_resources.resource_filename('gym_wordle', 'data/guess_list.npy')).astype(np.int32) - 1
+SOLUTION_LIST = np.load(pkg_resources.resource_filename('gym_wordle', 'data/solution_list.npy')).astype(np.int32) - 1
 
 def visualize(observation):
     formed_observation = np.reshape(observation[:-1], newshape=(5, 26))
@@ -30,7 +27,7 @@ def visualize(observation):
     # formed_observation = observation
     header = 'Step: ' + str(observation[-1] + 1) + ' | '
     for i in range(26):
-        header += chr(97+i) + ' | '
+        header += chr(97 + i) + ' | '
     print('-' * len(header))
     print(header)
     print('-' * len(header))
@@ -56,19 +53,6 @@ def encodeToStr(encoding):
     for enc in encoding:
         string += chr(97 + enc)
     return string
-
-def strToEncode(lines):
-    encoding = []
-    for line in lines:
-        encoding.append(tuple(ord(char) - 97 for char in line.strip()))
-    return encoding
-
-
-
-with open(filename, "r") as f:
-    WORDS = strToEncode(f.readlines())
-
-VOCAB_SIZE = len(WORDS)
 
 class WordleEnv(gym.Env):
     """
@@ -112,44 +96,31 @@ class WordleEnv(gym.Env):
     def __init__(self, **kwargs):
         super(WordleEnv, self).__init__()
         self.action_space = spaces.MultiDiscrete([26] * WORD_LENGTH)
-        # self.observation_space = spaces.Box(low=-1, high=2, shape=(WORD_LENGTH, 26,))
         observation_space_vector = [4] * WORD_LENGTH * 26
         observation_space_vector.append(GAME_LENGTH + 1)
         self.observation_space = spaces.MultiDiscrete(nvec=observation_space_vector)
-        # self.observation_space = spaces.MultiBinary(n=[4] * WORD_LENGTH * 26)
-        # self.syllabus = list(np.arange(100))
-        self.syllabus = list(np.arange(VOCAB_SIZE))
-        self.cheat_mode = kwargs.get('cheat_mode', True)
         
-
-    def expand_syllabus(self):
-        if len(self.syllabus) < VOCAB_SIZE:
-            logging.info('Expanding syllabus to ' + str(self.syllabus[-1] + 1) + ' words...')
-            self.syllabus.append(self.syllabus[-1] + 1)
-        else:
-            logging.debug('Skipping syllabus expansion as vocab limit ' + str(self.syllabus[-1] + 1) + ' reached...')
-    
    
     def reset(self, seed: Optional[int] = None):
-        # super().reset(seed=seed)
         if seed is not None:
-            self.hidden_word = random.choice([WORDS[x] for x in seed])
+            self.hidden_word = random.choice([SOLUTION_LIST[x] for x in seed])
         else:
-            self.hidden_word = random.choice([WORDS[x] for x in self.syllabus])
-        # self.guesses_left = GAME_LENGTH
+            self.hidden_word = SOLUTION_LIST[np.random.randint(SOLUTION_LIST.shape[0])]
         self.board_row_idx = 0
-        self.prev_state = np.zeros(shape=(WORD_LENGTH, 26), dtype=int)
-        self.state = np.zeros(shape=(WORD_LENGTH, 26), dtype=int)
-        self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=int))
+        self.attempts = 0
+        self.prev_state = np.zeros(shape=(WORD_LENGTH, 26), dtype=np.int32)
+        self.state = np.zeros(shape=(WORD_LENGTH, 26), dtype=np.int32)
+        self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=np.int32))
         self.guesses = []
-        if self.cheat_mode:
-            _, _, _, _ = self.evaluate_action(self.hidden_word, cheat_mode=True)
-        # self.scores = [self.state.sum()]
         return self._get_obs()
 
-    def evaluate_action(self, action, cheat_mode):
-        if cheat_mode:
-            action = self.hidden_word
+    def step(self, action):
+        valid = False
+        for i in range(GUESS_LIST.shape[0]):
+            if np.array_equal(action, GUESS_LIST[i]):
+                valid = True
+                break
+        
         hw = list(self.hidden_word)
         solved_indexes = []
         distance = 0
@@ -157,8 +128,7 @@ class WordleEnv(gym.Env):
             self.prev_state = self.state.copy()
             if char == self.hidden_word[idx]:
                 # in the correct location
-                if not cheat_mode:
-                    self.board[self.board_row_idx, idx] = 2
+                self.board[self.board_row_idx, idx] = 2
                 self.state[:, char] = np.where(self.state[:, char]==2, 0, self.state[:, char]) # maybes for the same alphabet become unknowns
                 self.state[idx, :] = 1 # all other alphabets become incorrect on this word index
                 self.state[idx, char] = 3 
@@ -177,15 +147,14 @@ class WordleEnv(gym.Env):
                     # if i not in solved_indexes:
                     #     self.state[i, char] = 0
                 distance += 0.2
-                if not idx in solved_indexes and not cheat_mode:
+                if not idx in solved_indexes:
                     self.board[self.board_row_idx, idx] = 0
                 
             else:
                 # alphabet is present in the word
                 if char != self.hidden_word[idx]:
                     # in the wrong location
-                    if not cheat_mode:
-                        self.board[self.board_row_idx, idx] = 1
+                    self.board[self.board_row_idx, idx] = 1
                     hw.remove(char)
                     self.state[idx, char] = 1
                     self.state[:, char] = np.where(self.state[:, char]==0, 2, self.state[:, char])
@@ -207,64 +176,38 @@ class WordleEnv(gym.Env):
                             self.state[j, i] = 3
                             deductions_pending = True
                             break # can only happen once with an alphabet so no need to continue the for loop
-        
-        # possible_alphabets = []
-        # known_alphabets = []
-        # for i in range(26):
-        #     if (self.state[:, i]==1).any():            
-        #         possible_alphabets.append(i)
-        #     for j in range(5):
-        #         if self.state[j, i]==2:            
-        #             known_alphabets.append(i)
-        # if len(possible_alphabets) == 5 - len(known_alphabets):
-        #     for i in range(26):
-        #         if i not in possible_alphabets and i not in known_alphabets:
-        #             logging.debug('Eliminating alphabet "' + chr(97 + i) + '" from consideration as all correct alphabets are either known or possible.')
-        #             self.state[:, i] = 0
-        
+            
         # update guesses remaining tracker
-        if not cheat_mode:
-            self.board_row_idx += 1
-            # update previous guesses made
-            self.guesses.append(action)
+        self.attempts += 1
+        self.board_row_idx += 1
+        # update previous guesses made
+        self.guesses.append(action)
         
         if all(self.board[self.board_row_idx - 1, :] == 2):
             done = True
-            reward = 1
+            reward = 1.0
         else:
-            reward = 0
-            if self.board_row_idx == GAME_LENGTH:
+            reward = 0.0
+            if self.attempts == GAME_LENGTH:
                 done = True
             else:
                 done = False
-        
         self.prev_state = self.state.copy()
-        # reward = -custom_distance(action, self.hidden_word) / 10
         scaled_rewards = np.round(np.power(np.exp(self.board[self.board_row_idx-1]), 2.308), 0) - 1 # [0, 9, 100]
         reward -= ((WORD_LENGTH * 100) - scaled_rewards.sum()) / (WORD_LENGTH * 100 * GAME_LENGTH)
-        # reward = (500 - scaled_rewards.sum() / (WORD_LENGTH * 10 * GAME_LENGTH))
-        # reward -= (1/6)
+        if not valid:
+            reward -= 1 / 60
         return self._get_obs(), reward, done, {}
-    
-    def step(self, action):
-        obs, reward, done, info = self.evaluate_action(action, cheat_mode=False)
-        if self.cheat_mode:
-            # undo state changes
-            state_backup = self.state.copy()
-            obs, _, _, _ = self.evaluate_action(action, cheat_mode=True)
-            self.state = state_backup.copy()
-        return obs, reward, done, info
-        
 
     def _get_obs(self):
-        return np.hstack((self.state.flatten(), self.board_row_idx)) 
+        return np.hstack((self.state.flatten(), self.attempts)) 
     
     def render(self, mode="human"):
         assert mode in ["human"], "Invalid mode, must be \"human\""
         print('###################################################')
         for i in range(len(self.guesses)):
             for j in range(WORD_LENGTH):
-                letter = chr(ord('a') + self.guesses[i][j])
+                letter = chr(97 + self.guesses[i][j])
                 if self.board[i][j] == 0:
                     print(Fore.BLACK + Style.BRIGHT + letter + " ", end='')
                 elif self.board[i][j] == 1:
@@ -289,12 +232,13 @@ if __name__ == "__main__":
     total_reward = 0
     while not done:
         guess = input('Enter your guess: ')
-        act = np.array(strToEncode([guess])[0])
+        # act = np.array(strToEncode([guess])[0])
+        act = np.array([ord(x) - 97 for x in guess])
         obs, reward, done, _ = env.step(act)
         visualize(obs)
         step += 1
         total_reward += reward
-        print('Guesses left: {:,.0f}'.format(GAME_LENGTH - env.board_row_idx))
+        print('Guesses left: {:,.0f}'.format(GAME_LENGTH - env.attempts))
         print('Reward: {0:,.3f}, Total Reward: {1:,.3f}'.format(reward, total_reward))
         print('Attempted ' + encodeToStr(act))
         env.render()

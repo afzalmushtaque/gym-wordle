@@ -15,11 +15,11 @@ from ray.rllib import VectorEnv
 
 colorama.init(autoreset=True)
 
+
 # global game variables
 GAME_LENGTH = 6
 WORD_LENGTH = 5
-GUESS_LIST = np.load(pkg_resources.resource_filename('gym_wordle', 'data/guess_list.npy')).astype(np.int32) - 1
-SOLUTION_LIST = np.load(pkg_resources.resource_filename('gym_wordle', 'data/solution_list.npy')).astype(np.int32) - 1
+
 
 def visualize(observation):
     formed_observation = np.reshape(observation[:-1], newshape=(5, 26))
@@ -49,10 +49,9 @@ def visualize(observation):
     print('-' * len(header))
 
 def encodeToStr(encoding):
-    string = ""
-    for enc in encoding:
-        string += chr(97 + enc)
-    return string
+    return ''.join([chr(char + 97) for char in encoding])
+
+
 
 class WordleEnv(gym.Env):
     """
@@ -95,37 +94,63 @@ class WordleEnv(gym.Env):
 
     def __init__(self, **kwargs):
         super(WordleEnv, self).__init__()
-        self.action_space = spaces.MultiDiscrete([26] * WORD_LENGTH)
+        self.guess_npy = np.load(pkg_resources.resource_filename('gym_wordle', 'data/guess_list.npy')).astype(np.int32) - 1
+        self.solution_npy = np.load(pkg_resources.resource_filename('gym_wordle', 'data/solution_list.npy')).astype(np.int32) - 1
+        self.guess_words = []
+        for i in range(self.guess_npy.shape[0]):
+            self.guess_words.append(''.join([chr(97+x) for x in self.guess_npy[i]]))
+        self.solution_words = []
+        for i in range(self.solution_npy.shape[0]):
+            self.solution_words.append(''.join([chr(97+x) for x in self.solution_npy[i]]))
+        
+        self.action_space = spaces.Discrete(self.guess_npy.shape[0])
         observation_space_vector = [4] * WORD_LENGTH * 26
         observation_space_vector.append(GAME_LENGTH + 1)
         self.observation_space = spaces.MultiDiscrete(nvec=observation_space_vector)
         
-   
+    def shortlist_remaining_words(self, guess_word, mask):
+        solution_words_copy = self.remaining_words.copy()
+        for solution_word in self.remaining_words:
+            tracking_word = list(solution_word)
+            for index, character in enumerate(guess_word):
+                if mask[index]==2:
+                    if character!=solution_word[index]:
+                        solution_words_copy.remove(solution_word)
+                        break
+                    else:
+                        tracking_word.remove(character)
+                elif mask[index]==1:
+                    if character not in tracking_word:
+                        solution_words_copy.remove(solution_word)
+                        break
+                    else:
+                        tracking_word.remove(character)
+                elif mask[index]==0:
+                    if character in tracking_word:
+                        solution_words_copy.remove(solution_word)
+                        break
+                else:
+                    raise Exception('Invalid mask "' + mask[index] + '" specified')
+        self.remaining_words = solution_words_copy
+        print(self.remaining_words)
+
     def reset(self, seed: Optional[int] = None):
         if seed is not None:
-            self.hidden_word = random.choice([SOLUTION_LIST[x] for x in seed])
+            self.hidden_word = random.choice([self.solution_npy[x] for x in seed])
         else:
-            self.hidden_word = SOLUTION_LIST[np.random.randint(SOLUTION_LIST.shape[0])]
+            self.hidden_word = self.solution_npy[np.random.randint(self.solution_npy.shape[0])]
         self.board_row_idx = 0
-        self.attempts = 0
-        self.prev_state = np.zeros(shape=(WORD_LENGTH, 26), dtype=np.int32)
         self.state = np.zeros(shape=(WORD_LENGTH, 26), dtype=np.int32)
         self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=np.int32))
         self.guesses = []
+        self.remaining_words = self.solution_words.copy()
         return self._get_obs()
 
     def step(self, action):
-        valid = False
-        for i in range(GUESS_LIST.shape[0]):
-            if np.array_equal(action, GUESS_LIST[i]):
-                valid = True
-                break
-        
+        action = self.guess_npy[action]        
         hw = list(self.hidden_word)
         solved_indexes = []
-        distance = 0
         for idx, char in enumerate(action):
-            self.prev_state = self.state.copy()
             if char == self.hidden_word[idx]:
                 # in the correct location
                 self.board[self.board_row_idx, idx] = 2
@@ -134,35 +159,23 @@ class WordleEnv(gym.Env):
                 self.state[idx, char] = 3 
                 hw.remove(char)
                 solved_indexes.append(idx)
-                if self.state[idx, char]!=self.prev_state[idx, char]:
-                    distance -= 10
         for idx, char in enumerate(action):
             if idx in solved_indexes:
                 continue
-            self.prev_state = self.state.copy()
             if char not in hw:
                 logging.debug('Alphabet "' + chr(97 + char) + '" does not exist in the remaining word at any non solved index. Rejecting it across the word.')
                 for i in range(WORD_LENGTH):
                     self.state[:, char] = np.where(self.state[:, char]==0, 1, self.state[:, char])
-                    # if i not in solved_indexes:
-                    #     self.state[i, char] = 0
-                distance += 0.2
-                if not idx in solved_indexes:
-                    self.board[self.board_row_idx, idx] = 0
-                
+                    self.state[idx, char] = 1
+                self.board[self.board_row_idx, idx] = 0
             else:
                 # alphabet is present in the word
-                if char != self.hidden_word[idx]:
-                    # in the wrong location
-                    self.board[self.board_row_idx, idx] = 1
-                    hw.remove(char)
-                    self.state[idx, char] = 1
-                    self.state[:, char] = np.where(self.state[:, char]==0, 2, self.state[:, char])
-                    distance += 0.1
-            # check for changes
-            if self.state[idx, char]==self.prev_state[idx, char]:
-                # did not gain new information    
-                distance += 0.1
+                assert char != self.hidden_word[idx]
+                # in the wrong location
+                self.board[self.board_row_idx, idx] = 1
+                hw.remove(char)
+                self.state[idx, char] = 1
+                self.state[:, char] = np.where(self.state[:, char]==0, 2, self.state[:, char])
 
         deductions_pending = True
         while(deductions_pending):
@@ -178,29 +191,46 @@ class WordleEnv(gym.Env):
                             break # can only happen once with an alphabet so no need to continue the for loop
             
         # update guesses remaining tracker
-        self.attempts += 1
         self.board_row_idx += 1
         # update previous guesses made
         self.guesses.append(action)
-        
+        # information_gain = 0
+        # for i in range(WORD_LENGTH):
+        #     for j in range(26):
+        #         if self.state[i, j]==self.prev_state[i, j]:
+        #             information_gain -=0.01
+        #         else:
+        #             if self.state[i, j]==3:
+        #                 information_gain += 0.5
+        #             elif self.state[i, j]==2:
+        #                 information_gain += 0.1
+        #             elif self.state[i, j]==1:
+        #                 information_gain += 0.03
+        #             elif self.state[i, j]==0:
+        #                 information_gain += 0.01
+        #             else:
+        #                 raise Exception('Impossible situation while calculating information gain.')
         if all(self.board[self.board_row_idx - 1, :] == 2):
             done = True
-            reward = 1.0
         else:
-            reward = 0.0
-            if self.attempts == GAME_LENGTH:
+            if self.board_row_idx == GAME_LENGTH:
                 done = True
             else:
                 done = False
         self.prev_state = self.state.copy()
-        scaled_rewards = np.round(np.power(np.exp(self.board[self.board_row_idx-1]), 2.308), 0) - 1 # [0, 9, 100]
-        reward -= ((WORD_LENGTH * 100) - scaled_rewards.sum()) / (WORD_LENGTH * 100 * GAME_LENGTH)
-        if not valid:
-            reward -= 1 / 60
-        return self._get_obs(), reward, done, {}
+        # if done:
+        #     reward = np.sum(self.board[self.board_row_idx - 1])
+        # else:
+        #     reward = 0
+        # scaled_rewards = np.round(np.power(np.exp(self.board[self.board_row_idx-1]), 2.308), 0) - 1 # [0, 9, 100]
+        # reward -= ((WORD_LENGTH * 100) - scaled_rewards.sum()) / (WORD_LENGTH * 100 * GAME_LENGTH)
+        
+        self.shortlist_remaining_words(encodeToStr(action), self.board[self.board_row_idx - 1])
+
+        return self._get_obs(), -len(self.remaining_words), done, {}
 
     def _get_obs(self):
-        return np.hstack((self.state.flatten(), self.attempts)) 
+        return np.hstack((self.state.flatten(), self.board_row_idx)) 
     
     def render(self, mode="human"):
         assert mode in ["human"], "Invalid mode, must be \"human\""
@@ -222,7 +252,7 @@ class WordleEnv(gym.Env):
 if __name__ == "__main__":
     import sys
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    env = WordleEnv(cheat_mode=True)
+    env = WordleEnv()
     obs = env.reset(seed=[10])
     visualize(obs)
     step = 0
@@ -232,15 +262,16 @@ if __name__ == "__main__":
     total_reward = 0
     while not done:
         guess = input('Enter your guess: ')
+        act = int(guess)
         # act = np.array(strToEncode([guess])[0])
-        act = np.array([ord(x) - 97 for x in guess])
+        # act = np.array([ord(x) - 97 for x in guess])
         obs, reward, done, _ = env.step(act)
         visualize(obs)
         step += 1
         total_reward += reward
-        print('Guesses left: {:,.0f}'.format(GAME_LENGTH - env.attempts))
+        print('Guesses left: {:,.0f}'.format(GAME_LENGTH - env.board_row_idx))
         print('Reward: {0:,.3f}, Total Reward: {1:,.3f}'.format(reward, total_reward))
-        print('Attempted ' + encodeToStr(act))
+        print('Attempted ' + encodeToStr(env.guess_npy[act]))
         env.render()
     print('Hidden word:')
     print(encodeToStr(env.hidden_word))

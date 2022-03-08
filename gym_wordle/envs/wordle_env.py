@@ -1,5 +1,3 @@
-from dis import dis
-from math import dist
 import gym
 from gym import spaces
 import numpy as np
@@ -10,7 +8,6 @@ import colorama
 from colorama import Fore
 from colorama import Style
 import logging
-from ray.rllib import VectorEnv
 
 
 colorama.init(autoreset=True)
@@ -37,11 +34,7 @@ def visualize(observation):
             if formed_observation[i][j] == 0:
                 encoding = '  '
             elif formed_observation[i][j] == 1:
-                encoding = ' -'
-            elif formed_observation[i][j] == 2:
-                encoding = ' ?'
-            elif formed_observation[i][j] == 3:
-                encoding = ' R'
+                encoding = ' X'
             else:
                 raise Exception('Invalid state')
             print_string += encoding + ' |'
@@ -52,46 +45,7 @@ def encodeToStr(encoding):
     return ''.join([chr(char + 97) for char in encoding])
 
 
-
 class WordleEnv(gym.Env):
-    """
-    Simple Wordle Environment
-
-    Wordle is a guessing game where the player has 6 guesses to guess the
-    5 letter hidden word. After each guess, the player gets feedback on the
-    board regarding the word guessed. For each character in the guessed word:
-        * if the character is not in the hidden word, the character is
-          grayed out (encoded as 0 in the environment)
-        * if the character is in the hidden word but not in correct
-          location, the character is yellowed out (encoded as 1 in the
-          environment)
-        * if the character is in the hidden word and in the correct
-          location, the character is greened out (encoded as 2 in the
-          environment)
-
-    The player continues to guess until they have either guessed the correct
-    hidden word, or they have run out of guesses.
-
-    The environment is structured in the following way:
-        * Action Space: the action space is a length 5 MulitDiscrete where valid values
-          are [0, 25], corresponding to characters [a, z].
-        * Observation Space: the observation space is dict consisting of
-          two objects:
-          - board: The board is 6x5 Box corresponding to the history of
-            guesses. At the start of the game, the board is filled entirely
-            with -1 values, indicating no guess has been made. As the player
-            guesses words, the rows will fill up with values in the range
-            [0, 2] indicating whether the characters are missing in the
-            hidden word, in the incorrect position, or in the correct position
-			based on the most recent guess.
-          - alphabet: the alphabet is a length 26 Box corresponding to the guess status
-            for each letter in the alaphabet. As the start, all values are -1, as no letter
-            has been used in a guess. As the player guesses words, the letters in the
-            alphabet will change to values in the range [0, 2] indicating whether the
-            characters are missing in the hidden word, in the incorrect position,
-            or in the correct position.
-    """
-
     def __init__(self, **kwargs):
         super(WordleEnv, self).__init__()
         self.guess_npy = np.load(pkg_resources.resource_filename('gym_wordle', 'data/guess_list.npy')).astype(np.int32) - 1
@@ -108,39 +62,13 @@ class WordleEnv(gym.Env):
         observation_space_vector.append(GAME_LENGTH + 1)
         self.observation_space = spaces.MultiDiscrete(nvec=observation_space_vector)
         
-    def shortlist_remaining_words(self, guess_word, mask):
-        solution_words_copy = self.remaining_words.copy()
-        for solution_word in self.remaining_words:
-            tracking_word = list(solution_word)
-            for index, character in enumerate(guess_word):
-                if mask[index]==2:
-                    if character!=solution_word[index]:
-                        solution_words_copy.remove(solution_word)
-                        break
-                    else:
-                        tracking_word.remove(character)
-                elif mask[index]==1:
-                    if character not in tracking_word:
-                        solution_words_copy.remove(solution_word)
-                        break
-                    else:
-                        tracking_word.remove(character)
-                elif mask[index]==0:
-                    if character in tracking_word:
-                        solution_words_copy.remove(solution_word)
-                        break
-                else:
-                    raise Exception('Invalid mask "' + mask[index] + '" specified')
-        self.remaining_words = solution_words_copy
-        print(self.remaining_words)
-
     def reset(self, seed: Optional[int] = None):
         if seed is not None:
             self.hidden_word = random.choice([self.solution_npy[x] for x in seed])
         else:
             self.hidden_word = self.solution_npy[np.random.randint(self.solution_npy.shape[0])]
         self.board_row_idx = 0
-        self.state = np.zeros(shape=(WORD_LENGTH, 26), dtype=np.int32)
+        self.state = np.ones(shape=(WORD_LENGTH, 26), dtype=np.int32)
         self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=np.int32))
         self.guesses = []
         self.remaining_words = self.solution_words.copy()
@@ -154,9 +82,6 @@ class WordleEnv(gym.Env):
             if char == self.hidden_word[idx]:
                 # in the correct location
                 self.board[self.board_row_idx, idx] = 2
-                self.state[:, char] = np.where(self.state[:, char]==2, 0, self.state[:, char]) # maybes for the same alphabet become unknowns
-                self.state[idx, :] = 1 # all other alphabets become incorrect on this word index
-                self.state[idx, char] = 3 
                 hw.remove(char)
                 solved_indexes.append(idx)
         for idx, char in enumerate(action):
@@ -164,9 +89,6 @@ class WordleEnv(gym.Env):
                 continue
             if char not in hw:
                 logging.debug('Alphabet "' + chr(97 + char) + '" does not exist in the remaining word at any non solved index. Rejecting it across the word.')
-                for i in range(WORD_LENGTH):
-                    self.state[:, char] = np.where(self.state[:, char]==0, 1, self.state[:, char])
-                    self.state[idx, char] = 1
                 self.board[self.board_row_idx, idx] = 0
             else:
                 # alphabet is present in the word
@@ -174,42 +96,12 @@ class WordleEnv(gym.Env):
                 # in the wrong location
                 self.board[self.board_row_idx, idx] = 1
                 hw.remove(char)
-                self.state[idx, char] = 1
-                self.state[:, char] = np.where(self.state[:, char]==0, 2, self.state[:, char])
 
-        deductions_pending = True
-        while(deductions_pending):
-            deductions_pending = False
-            for i in range(26):
-                if (self.state[:, i]==1).sum()==4 and (self.state[:, i]==2).sum()==1:
-                    for j in range(WORD_LENGTH):
-                        if self.state[j, i]==2:
-                            logging.debug('Deducing alphabet "' + chr(97 + i) + '" at position ' + str(j + 1) + ' by elimination and marking all other alphabets at this location as incorrect.')
-                            self.state[j, :] = 1
-                            self.state[j, i] = 3
-                            deductions_pending = True
-                            break # can only happen once with an alphabet so no need to continue the for loop
-            
         # update guesses remaining tracker
         self.board_row_idx += 1
         # update previous guesses made
         self.guesses.append(action)
-        # information_gain = 0
-        # for i in range(WORD_LENGTH):
-        #     for j in range(26):
-        #         if self.state[i, j]==self.prev_state[i, j]:
-        #             information_gain -=0.01
-        #         else:
-        #             if self.state[i, j]==3:
-        #                 information_gain += 0.5
-        #             elif self.state[i, j]==2:
-        #                 information_gain += 0.1
-        #             elif self.state[i, j]==1:
-        #                 information_gain += 0.03
-        #             elif self.state[i, j]==0:
-        #                 information_gain += 0.01
-        #             else:
-        #                 raise Exception('Impossible situation while calculating information gain.')
+
         if all(self.board[self.board_row_idx - 1, :] == 2):
             done = True
         else:
@@ -217,17 +109,97 @@ class WordleEnv(gym.Env):
                 done = True
             else:
                 done = False
-        self.prev_state = self.state.copy()
-        # if done:
-        #     reward = np.sum(self.board[self.board_row_idx - 1])
-        # else:
-        #     reward = 0
-        # scaled_rewards = np.round(np.power(np.exp(self.board[self.board_row_idx-1]), 2.308), 0) - 1 # [0, 9, 100]
-        # reward -= ((WORD_LENGTH * 100) - scaled_rewards.sum()) / (WORD_LENGTH * 100 * GAME_LENGTH)
-        
-        self.shortlist_remaining_words(encodeToStr(action), self.board[self.board_row_idx - 1])
 
-        return self._get_obs(), -len(self.remaining_words), done, {}
+        mask = self.board[self.board_row_idx - 1]
+        guess_word = encodeToStr(action)
+        solution_words_copy = self.remaining_words.copy()
+        
+        for solution_word in self.remaining_words:
+            tracking_word = list(solution_word)
+            for index, character in enumerate(guess_word):
+                if mask[index]==2:
+                    if character!=solution_word[index]:
+                        solution_words_copy.remove(solution_word)
+                        break
+                    else:
+                        try:
+                            tracking_word.remove(character)
+                        except Exception as e:
+                            logging.error('Exception occured for mask==2')
+                            logging.error(e)
+                            logging.error('self.hidden_word:')
+                            logging.error(encodeToStr(self.hidden_word))
+                            logging.error('guess_word:')
+                            logging.error(guess_word)
+                            logging.error('mask')
+                            logging.error(mask)
+                            logging.error('self.remaining_words:')
+                            logging.error(self.remaining_words)
+                            logging.error('solution_words_copy:')
+                            logging.error(solution_words_copy)
+                            logging.error('solution_word:')
+                            logging.error(solution_word)
+                            logging.error('tracking_word:')
+                            logging.error(tracking_word)
+                            logging.error('index:')
+                            logging.error(index)
+                            logging.error('character:')
+                            logging.error(character)
+                            raise e
+            if solution_word not in solution_words_copy:
+                continue
+            for index, character in enumerate(guess_word):    
+                if mask[index]==1:
+                    if character not in tracking_word:
+                        solution_words_copy.remove(solution_word)
+                        break
+                    else:
+                        try:
+                            tracking_word.remove(character)
+                        except Exception as e:
+                            logging.error('Exception occured for mask==1')
+                            logging.error(e)
+                            logging.error('self.hidden_word:')
+                            logging.error(encodeToStr(self.hidden_word))
+                            logging.error('guess_word:')
+                            logging.error(guess_word)
+                            logging.error('mask')
+                            logging.error(mask)
+                            logging.error('self.remaining_words:')
+                            logging.error(self.remaining_words)
+                            logging.error('solution_words_copy:')
+                            logging.error(solution_words_copy)
+                            logging.error('solution_word:')
+                            logging.error(solution_word)
+                            logging.error('tracking_word:')
+                            logging.error(tracking_word)
+                            logging.error('index:')
+                            logging.error(index)
+                            logging.error('character:')
+                            logging.error(character)
+                            raise e
+                elif mask[index]==0:
+                    if character in tracking_word:
+                        solution_words_copy.remove(solution_word)
+                        break
+                # else:
+                    # raise Exception('Invalid mask "' + mask[index] + '" specified')
+
+        self.remaining_words = solution_words_copy
+        self.state = np.zeros(shape=(WORD_LENGTH, 26), dtype=np.int32)
+        logging.debug('{:,.0f} words remaining:'.format(len(self.remaining_words)))
+        logging.debug(self.remaining_words)
+        for word in self.remaining_words:
+            for i in range(WORD_LENGTH):
+                char_value = ord(word[i]) - 97
+                self.state[i, char_value] = 1
+        info_eff_cost = len(self.remaining_words) * 1000 / (2315 * 6)
+        act_eff_cost = (10 - np.sum(self.board[self.board_row_idx - 1])) / 600
+        total_cost = info_eff_cost + act_eff_cost
+        logging.debug('info_eff_cost: {:,.4f}'.format(info_eff_cost))
+        logging.debug('act_eff_cost: {:,.4f}'.format(act_eff_cost))
+        logging.debug('total_cost: {:,.4f}'.format(total_cost))
+        return self._get_obs(), -total_cost, done, {}
 
     def _get_obs(self):
         return np.hstack((self.state.flatten(), self.board_row_idx)) 

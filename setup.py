@@ -5,6 +5,6 @@ setup(name='gym_wordle',
       install_requires=['gym==0.17.2',
                         'numpy>=1.19.2',
                         'colorama>=0.4.4'],
-      package_data={'gym_wordle': ['data/*.txt', 'envs/*']},
+      package_data={'gym_wordle': ['data/*.npy', 'envs/*']},
       packages=['gym_wordle'],
 )

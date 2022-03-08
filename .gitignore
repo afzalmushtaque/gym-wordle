@@ -5,3 +5,4 @@ __pycache__
 *.egg-info
 gym_wordle/data/words.txt
 build/*
+.env

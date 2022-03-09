@@ -60,7 +60,10 @@ class WordleEnv(gym.Env):
         self.action_space = spaces.Discrete(self.guess_npy.shape[0])
         observation_space_vector = [4] * WORD_LENGTH * 26
         observation_space_vector.append(GAME_LENGTH + 1)
-        self.observation_space = spaces.MultiDiscrete(nvec=observation_space_vector)
+        self.observation_space = spaces.Dict({
+            'valid_avail_actions_mask': gym.spaces.Box(0, 1, shape=(self.guess_npy.shape[0],)),
+            'observation': spaces.MultiDiscrete(nvec=observation_space_vector)
+        })
         
     def reset(self, seed: Optional[int] = None):
         if seed is not None:
@@ -72,9 +75,16 @@ class WordleEnv(gym.Env):
         self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=np.int32))
         self.guesses = []
         self.remaining_words = self.solution_words.copy()
+        self.valid_avail_actions_mask = np.array([1.0] * self.guess_npy.shape[0], dtype=np.float32)
         return self._get_obs()
 
     def step(self, action):
+        if self.valid_avail_actions_mask[action]==0:
+            raise ValueError(
+                "Chosen action was not one of the non-zero action embeddings",
+                action,
+                self.valid_avail_actions_mask[action],
+            )
         action = self.guess_npy[action]        
         hw = list(self.hidden_word)
         solved_indexes = []
@@ -88,7 +98,7 @@ class WordleEnv(gym.Env):
             if idx in solved_indexes:
                 continue
             if char not in hw:
-                logging.debug('Alphabet "' + chr(97 + char) + '" does not exist in the remaining word at any non solved index. Rejecting it across the word.')
+                # logging.debug('Alphabet "' + chr(97 + char) + '" does not exist in the remaining word at any non solved index. Rejecting it across the word.')
                 self.board[self.board_row_idx, idx] = 0
             else:
                 # alphabet is present in the word
@@ -150,7 +160,7 @@ class WordleEnv(gym.Env):
                 continue
             for index, character in enumerate(guess_word):    
                 if mask[index]==1:
-                    if character not in tracking_word:
+                    if character not in tracking_word or character==solution_word[index]:
                         solution_words_copy.remove(solution_word)
                         break
                     else:
@@ -186,6 +196,10 @@ class WordleEnv(gym.Env):
                     # raise Exception('Invalid mask "' + mask[index] + '" specified')
 
         self.remaining_words = solution_words_copy
+        self.valid_avail_actions_mask = np.array([0.0] * self.guess_npy.shape[0], dtype=np.float32)
+        for index, word in enumerate(self.guess_words):
+            if word in self.remaining_words:
+                self.valid_avail_actions_mask[index] = 1
         self.state = np.zeros(shape=(WORD_LENGTH, 26), dtype=np.int32)
         logging.debug('{:,.0f} words remaining:'.format(len(self.remaining_words)))
         logging.debug(self.remaining_words)
@@ -194,7 +208,7 @@ class WordleEnv(gym.Env):
                 char_value = ord(word[i]) - 97
                 self.state[i, char_value] = 1
         info_eff_cost = len(self.remaining_words) * 1000 / (2315 * 6)
-        act_eff_cost = (10 - np.sum(self.board[self.board_row_idx - 1])) / 600
+        act_eff_cost = (10 - np.sum(self.board[self.board_row_idx - 1])) / 60
         total_cost = info_eff_cost + act_eff_cost
         logging.debug('info_eff_cost: {:,.4f}'.format(info_eff_cost))
         logging.debug('act_eff_cost: {:,.4f}'.format(act_eff_cost))
@@ -202,7 +216,11 @@ class WordleEnv(gym.Env):
         return self._get_obs(), -total_cost, done, {}
 
     def _get_obs(self):
-        return np.hstack((self.state.flatten(), self.board_row_idx)) 
+        return {
+            'valid_avail_actions_mask': self.valid_avail_actions_mask,
+            'observation': np.hstack((self.state.flatten(), self.board_row_idx)) ,
+        }
+        
     
     def render(self, mode="human"):
         assert mode in ["human"], "Invalid mode, must be \"human\""
@@ -226,7 +244,7 @@ if __name__ == "__main__":
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     env = WordleEnv()
     obs = env.reset(seed=[10])
-    visualize(obs)
+    visualize(obs['observation'])
     step = 0
     print('Hidden word:')
     print(encodeToStr(env.hidden_word))
@@ -238,7 +256,7 @@ if __name__ == "__main__":
         # act = np.array(strToEncode([guess])[0])
         # act = np.array([ord(x) - 97 for x in guess])
         obs, reward, done, _ = env.step(act)
-        visualize(obs)
+        visualize(obs['observation'])
         step += 1
         total_reward += reward
         print('Guesses left: {:,.0f}'.format(GAME_LENGTH - env.board_row_idx))

@@ -52,9 +52,12 @@ def encode(string):
 
 
 class WordleEnv(gym.Env):
-    def __init__(self):
+    def __init__(self, ordered=False, simple_reward=False):
         super(WordleEnv, self).__init__()
-        
+        self.ordered = ordered
+        self.simple_reward = simple_reward
+        if self.ordered:
+            self.game_index = -1
         self.guess_npy = np.load(pkg_resources.resource_filename('gym_wordle', 'data/guess_list.npy')).astype(np.int32) - 1
         self.solution_npy = np.load(pkg_resources.resource_filename('gym_wordle', 'data/solution_list.npy')).astype(np.int32) - 1
 
@@ -77,11 +80,25 @@ class WordleEnv(gym.Env):
             }
         )
         
-    def reset(self, seed: Optional[int] = None):
-        if seed is not None:
-            self.hidden_word = random.choice([self.solution_npy[x] for x in seed])
+    def reset(self, game_number=None, seed = None):
+        if seed:
+            np.random.seed(seed)
+            random.seed(seed)
+        if game_number:
+            logging.debug('Loading specified game number...')
+            game_index = game_number
         else:
-            self.hidden_word = self.solution_npy[np.random.randint(self.solution_npy.shape[0])]
+            if self.ordered:
+                self.game_index += 1
+                if self.game_index==self.solution_npy.shape[0]:
+                    self.game_index = 0
+                logging.debug('Loading ordered game number...')
+                game_index = self.game_index
+            else:
+                logging.debug('Loading random game number...')
+                game_index = np.random.randint(self.solution_npy.shape[0])
+        logging.debug('Loaded game number {0}.'.format(game_index))
+        self.hidden_word = self.solution_npy[game_index]
         self.board_row_idx = 0
         self.state = np.ones(shape=(WORD_LENGTH, ALPHABET_LENGTH), dtype=np.int32)
         self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=np.int32))
@@ -91,6 +108,7 @@ class WordleEnv(gym.Env):
         return self._get_obs()
 
     def step(self, action):
+        info = {}
         if self.valid_avail_actions_mask[action]==0:
             raise ValueError(
                 "Chosen action was not one of the non-zero action embeddings",
@@ -125,11 +143,14 @@ class WordleEnv(gym.Env):
 
         if all(self.board[self.board_row_idx - 1, :] == 2):
             done = True
+            won = True
         else:
             if self.board_row_idx == GAME_LENGTH:
                 done = True
+                won = False
             else:
                 done = False
+                won = None
 
         mask = self.board[self.board_row_idx - 1]
         guess_word = decode(action)
@@ -174,8 +195,7 @@ class WordleEnv(gym.Env):
             if word in self.remaining_words:
                 self.valid_avail_actions_mask[index] = 1
         self.state = np.zeros(shape=(WORD_LENGTH, ALPHABET_LENGTH), dtype=np.int32)
-        logging.debug('{:,.0f} words remaining:'.format(len(self.remaining_words)))
-        logging.debug(self.remaining_words)
+        info['remaining_words'] = self.remaining_words
         for word in self.remaining_words:
             for i in range(WORD_LENGTH):
                 char_value = ord(word[i]) - 97
@@ -187,14 +207,19 @@ class WordleEnv(gym.Env):
             if np.sum(self.state[char_index, :])==1:
                 self.state[char_index, :] = np.where(self.state[char_index, :]==1, 2, 0)
 
-
-        info_eff_cost = len(self.remaining_words) * 1000 / (2315 * 6)
-        act_eff_cost = (10 - np.sum(self.board[self.board_row_idx - 1])) / 60
-        total_cost = info_eff_cost + act_eff_cost
-        logging.debug('info_eff_cost: {:,.4f}'.format(info_eff_cost))
-        logging.debug('act_eff_cost: {:,.4f}'.format(act_eff_cost))
-        logging.debug('total_cost: {:,.4f}'.format(total_cost))
-        return self._get_obs(), -total_cost, done, {}
+        if self.simple_reward:
+            reward = -1
+            if done and not won:
+                reward = -2
+        else:
+            info_eff_cost = len(self.remaining_words) * 1000 / (2315 * 6)
+            act_eff_cost = (10 - np.sum(self.board[self.board_row_idx - 1])) / 60
+            total_cost = info_eff_cost + act_eff_cost
+            logging.debug('info_eff_cost: {:,.4f}'.format(info_eff_cost))
+            logging.debug('act_eff_cost: {:,.4f}'.format(act_eff_cost))
+            logging.debug('total_cost: {:,.4f}'.format(total_cost))
+            reward = -total_cost
+        return self._get_obs(), reward, done, info
 
     def _get_obs(self):
         return {
@@ -221,11 +246,9 @@ class WordleEnv(gym.Env):
 
 if __name__ == "__main__":
     import sys
-
-
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    env = WordleEnv()
-    obs = env.reset(seed=[10])
+    env = WordleEnv(ordered=True)
+    obs = env.reset()
     visualize(obs['observation'])
     step = 0
     print('Hidden word:')

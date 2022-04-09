@@ -3,7 +3,7 @@ from gym import spaces
 import numpy as np
 import random
 import pkg_resources
-from typing import Optional
+from time import time
 import colorama
 from colorama import Fore, Style
 import logging
@@ -12,7 +12,6 @@ import logging
 colorama.init(autoreset=True)
 
 
-# global game variables
 GAME_LENGTH = 6
 WORD_LENGTH = 5
 ALPHABET_LENGTH = 26
@@ -52,8 +51,11 @@ def encode(string):
 
 
 class WordleEnv(gym.Env):
-    def __init__(self, ordered=False, simple_reward=False):
+    def __init__(self, ordered=False, simple_reward=False, seed=None):
         super(WordleEnv, self).__init__()
+        if seed:
+            np.random.seed(seed)
+            random.seed(seed)
         self.ordered = ordered
         self.simple_reward = simple_reward
         if self.ordered:
@@ -80,10 +82,7 @@ class WordleEnv(gym.Env):
             }
         )
         
-    def reset(self, game_number=None, seed = None):
-        if seed:
-            np.random.seed(seed)
-            random.seed(seed)
+    def reset(self, game_number=None):
         if game_number:
             logging.debug('Loading specified game number...')
             game_index = game_number
@@ -98,12 +97,12 @@ class WordleEnv(gym.Env):
                 logging.debug('Loading random game number...')
                 game_index = np.random.randint(self.solution_npy.shape[0])
         logging.debug('Loaded game number {0}.'.format(game_index))
-        self.hidden_word = self.solution_npy[game_index]
+        self.hidden_word = self.solution_words[game_index]
         self.board_row_idx = 0
         self.state = np.ones(shape=(WORD_LENGTH, ALPHABET_LENGTH), dtype=np.int32)
         self.board = np.negative(np.ones(shape=(GAME_LENGTH, WORD_LENGTH,), dtype=np.int32))
         self.guesses = []
-        self.remaining_words = self.solution_words.copy()
+        self.remaining_words: list[str] = self.solution_words.copy()
         self.valid_avail_actions_mask = np.array([1.0] * self.guess_npy.shape[0], dtype=np.float32)
         return self._get_obs()
 
@@ -115,15 +114,24 @@ class WordleEnv(gym.Env):
                 action,
                 self.valid_avail_actions_mask[action],
             )
-        action = self.guess_npy[action]        
+        action = self.guess_words[action]        
         hw = list(self.hidden_word)
         solved_indexes = []
+        valid_words = self.remaining_words.copy()
+        assert len(valid_words) > 0
         for idx, char in enumerate(action):
             if char == self.hidden_word[idx]:
                 # in the correct location
                 self.board[self.board_row_idx, idx] = 2
                 hw.remove(char)
                 solved_indexes.append(idx)
+                valid_words = [valid_word for valid_word in valid_words if valid_word[idx]==char]
+            elif char in self.hidden_word:
+                valid_words = [valid_word for valid_word in valid_words if valid_word[idx]!=char and char in valid_word]
+            else:
+                valid_words = [valid_word for valid_word in valid_words if char not in valid_word]
+            assert len(valid_words) > 0
+
         for idx, char in enumerate(action):
             if idx in solved_indexes:
                 continue
@@ -135,7 +143,7 @@ class WordleEnv(gym.Env):
                 # in the wrong location
                 self.board[self.board_row_idx, idx] = 1
                 hw.remove(char)
-
+                
         # update guesses remaining tracker
         self.board_row_idx += 1
         # update previous guesses made
@@ -152,61 +160,19 @@ class WordleEnv(gym.Env):
                 done = False
                 won = None
 
-        mask = self.board[self.board_row_idx - 1]
-        guess_word = decode(action)
-        solution_words_copy = self.remaining_words.copy()
-        
-        for solution_word in self.remaining_words:
-            tracking_word = list(solution_word)
-            for index, character in enumerate(guess_word):
-                if mask[index]==2:
-                    if character!=solution_word[index]:
-                        solution_words_copy.remove(solution_word)
-                        break
-                    else:
-                        try:
-                            tracking_word.remove(character)
-                        except Exception as e:
-                            logging.error(e)
-                            raise e
-            if solution_word not in solution_words_copy:
-                continue
-            for index, character in enumerate(guess_word):    
-                if mask[index]==1:
-                    if character not in tracking_word or character==solution_word[index]:
-                        solution_words_copy.remove(solution_word)
-                        break
-                    else:
-                        try:
-                            tracking_word.remove(character)
-                        except Exception as e:
-                            logging.error(e)
-                            raise e
-                elif mask[index]==0:
-                    if character in tracking_word:
-                        solution_words_copy.remove(solution_word)
-                        break
-                # else:
-                    # raise Exception('Invalid mask "' + mask[index] + '" specified')
-
-        self.remaining_words = solution_words_copy
         self.valid_avail_actions_mask = np.array([0.0] * self.guess_npy.shape[0], dtype=np.float32)
-        for index, word in enumerate(self.guess_words):
-            if word in self.remaining_words:
-                self.valid_avail_actions_mask[index] = 1
+        self.valid_avail_actions_mask[[self.guess_words.index(valid_word) for valid_word in valid_words]] = 1
+        assert np.sum(self.valid_avail_actions_mask) > 0 , "At least one valid action must remain in mask"
         self.state = np.zeros(shape=(WORD_LENGTH, ALPHABET_LENGTH), dtype=np.int32)
-        info['remaining_words'] = self.remaining_words
-        for word in self.remaining_words:
-            for i in range(WORD_LENGTH):
-                char_value = ord(word[i]) - 97
-                self.state[i, char_value] = 1
-
-        # Setting state = 2 for alphabets which are the only possibilities at a given character index
-        for char_index in range(WORD_LENGTH):
-            assert np.sum(self.state[char_index, :]) > 0, "At least one character from the alphabet must be present for character index " + str(char_index + 1)
-            if np.sum(self.state[char_index, :])==1:
-                self.state[char_index, :] = np.where(self.state[char_index, :]==1, 2, 0)
-
+        info['remaining_words'] = valid_words
+        for i in range(WORD_LENGTH):
+            valid_ith_alphabets = [ord(valid_word[i]) - 97 for valid_word in valid_words]
+            self.state[i, valid_ith_alphabets] = 1
+            # Setting state = 2 for alphabets which are the only possibilities at a given character index
+            assert np.sum(self.state[i, :]) > 0, "At least one character from the alphabet must be present for character index " + str(i + 1)
+            if np.sum(self.state[i, :])==1:
+                self.state[i, :] = np.where(self.state[i, :]==1, 2, 0)
+        self.remaining_words = valid_words
         if self.simple_reward:
             reward = -1
             if done and not won:
@@ -232,7 +198,7 @@ class WordleEnv(gym.Env):
         print('##########')
         for i in range(len(self.guesses)):
             for j in range(WORD_LENGTH):
-                letter = chr(97 + self.guesses[i][j])
+                letter =self.guesses[i][j]
                 if self.board[i][j] == 0:
                     print(Fore.BLACK + Style.BRIGHT + letter + " ", end='')
                 elif self.board[i][j] == 1:
@@ -240,19 +206,18 @@ class WordleEnv(gym.Env):
                 elif self.board[i][j] == 2:
                     print(Fore.GREEN + Style.BRIGHT + letter + " ", end='')
             print()
-        print()
         print('##########')
         print()
 
 if __name__ == "__main__":
     import sys
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    env = WordleEnv(ordered=True)
+    env = WordleEnv(ordered=True, simple_reward=True, seed=42)
     obs = env.reset()
     visualize(obs['observation'])
     step = 0
     print('Hidden word:')
-    print(decode(env.hidden_word))
+    print(env.hidden_word)
     done = False
     total_reward = 0
     while not done:
@@ -264,13 +229,17 @@ if __name__ == "__main__":
                 is_input_valid = True      
             except ValueError:
                 print('\'' + guess + '\' is not a valid guess. Please try again')
-
-        obs, reward, done, _ = env.step(action)
+        start = time()
+        obs, reward, done, info = env.step(action)
+        end = time()
+        time_taken = end - start
+        print("Time consumed in step: " + str(time_taken))
         visualize(obs['observation'])
+        print(info)
         step += 1
         total_reward += reward
         print('Guesses left: {:,.0f}'.format(GAME_LENGTH - env.board_row_idx))
         print('Reward: {0:,.3f}, Total Reward: {1:,.3f}'.format(reward, total_reward))
         print('Attempted ' + decode(env.guess_npy[action]))
         env.render()
-    print('Hidden word was \'' + decode(env.hidden_word) + '\'')
+    print('Hidden word was \'' + env.hidden_word + '\'')

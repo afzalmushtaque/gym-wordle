@@ -51,13 +51,14 @@ def encode(string):
 
 
 class WordleEnv(gym.Env):
-    def __init__(self, ordered=False, simple_reward=False, seed=None):
+    def __init__(self, ordered=False, simple_reward=False, mask_actions=False, seed=None):
         super(WordleEnv, self).__init__()
         if seed:
             np.random.seed(seed)
             random.seed(seed)
         self.ordered = ordered
         self.simple_reward = simple_reward
+        self.mask_actions = mask_actions
         if self.ordered:
             self.game_index = -1
         self.guess_npy = np.load(pkg_resources.resource_filename('gym_wordle', 'data/guess_list.npy')).astype(np.int32) - 1
@@ -159,10 +160,12 @@ class WordleEnv(gym.Env):
             else:
                 done = False
                 won = None
-
-        self.valid_avail_actions_mask = np.array([0.0] * self.guess_npy.shape[0], dtype=np.float32)
-        self.valid_avail_actions_mask[[self.guess_words.index(valid_word) for valid_word in valid_words]] = 1
-        assert np.sum(self.valid_avail_actions_mask) > 0 , "At least one valid action must remain in mask"
+        if self.mask_actions:
+            self.valid_avail_actions_mask = np.array([0.0] * self.guess_npy.shape[0], dtype=np.float32)
+            self.valid_avail_actions_mask[[self.guess_words.index(valid_word) for valid_word in valid_words]] = 1
+            assert np.sum(self.valid_avail_actions_mask) > 0 , "At least one valid action must remain in mask"
+        else:
+            self.valid_avail_actions_mask = np.array([1.0] * self.guess_npy.shape[0], dtype=np.float32)
         self.state = np.zeros(shape=(WORD_LENGTH, ALPHABET_LENGTH), dtype=np.int32)
         info['remaining_words'] = valid_words
         for i in range(WORD_LENGTH):
@@ -178,12 +181,15 @@ class WordleEnv(gym.Env):
             if done and not won:
                 reward = -2
         else:
-            info_eff_cost = len(self.remaining_words) * 1000 / (2315 * 6)
+            info_eff_cost = len(self.remaining_words) / (2315 * 6)
             act_eff_cost = (10 - np.sum(self.board[self.board_row_idx - 1])) / 60
             total_cost = info_eff_cost + act_eff_cost
-            logging.debug('info_eff_cost: {:,.4f}'.format(info_eff_cost))
-            logging.debug('act_eff_cost: {:,.4f}'.format(act_eff_cost))
-            logging.debug('total_cost: {:,.4f}'.format(total_cost))
+            if done and won:
+                total_cost -= 10
+            
+            # logging.debug('info_eff_cost: {:,.4f}'.format(info_eff_cost))
+            # logging.debug('act_eff_cost: {:,.4f}'.format(act_eff_cost))
+            # logging.debug('total_cost: {:,.4f}'.format(total_cost))
             reward = -total_cost
         return self._get_obs(), reward, done, info
 
